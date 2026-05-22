@@ -137,8 +137,6 @@ export function Globe(props: GlobeProps) {
   // and changing points/arcs doesn't re-create the globe
   const pointsRef = useRef(points)
   const arcsRef = useRef(arcs)
-  pointsRef.current = points
-  arcsRef.current = arcs
 
   // rotation state
   const phiRef = useRef(initialPhi)
@@ -147,9 +145,16 @@ export function Globe(props: GlobeProps) {
   const pointerDownAt = useRef<number | null>(null)
   const pointerDelta = useRef(0)
   const userPhi = useRef(0)
+  const animationFrameRef = useRef<number | null>(null)
 
   const [hovered, setHovered] = useState<Point | null>(null)
   const hoveredId = hovered?.id ?? null
+
+  // Update refs when props change
+  useEffect(() => {
+    pointsRef.current = points
+    arcsRef.current = arcs
+  }, [points, arcs])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -181,90 +186,92 @@ export function Globe(props: GlobeProps) {
       glowColor: hexToRgb01(glowColor),
       // we render our own markers via the SVG overlay for hover/click + per-point color
       markers: [],
-      onRender: (state) => {
-        if (autoRotate && pointerDownAt.current === null) {
-          phiRef.current += rotateSpeed
-        }
-        const phi = phiRef.current + userPhi.current
-        state.phi = phi
-        state.width = widthRef.current * 2
-        state.height = heightRef.current * 2
-
-        const w = widthRef.current
-        const h = heightRef.current
-        const radius = Math.min(w, h) / 2 - 4
-
-        // ── update marker positions in SVG overlay
-        for (const p of pointsRef.current) {
-          const el = markerCircleRefs.current.get(p.id)
-          if (!el) continue
-          const rotated = rotateVec3(latLngToVec3(p.lat, p.lng), phi, theta)
-          const sx = w / 2 + rotated.x * radius
-          const sy = h / 2 - rotated.y * radius
-          const visible = rotated.z > -0.05
-          el.setAttribute("cx", String(sx))
-          el.setAttribute("cy", String(sy))
-          const opacity = visible ? Math.min(1, 0.4 + rotated.z) : 0
-          el.setAttribute("opacity", String(opacity))
-          el.style.pointerEvents = visible ? "auto" : "none"
-        }
-
-        // ── update arc paths in SVG overlay
-        const byId = new Map(pointsRef.current.map((p) => [p.id, p]))
-        for (const arc of arcsRef.current) {
-          const path = arcPathRefs.current.get(`${arc.from}-${arc.to}`)
-          if (!path) continue
-          const a = byId.get(arc.from)
-          const b = byId.get(arc.to)
-          if (!a || !b) {
-            path.setAttribute("d", "")
-            continue
-          }
-          const v1 = latLngToVec3(a.lat, a.lng)
-          const v2 = latLngToVec3(b.lat, b.lng)
-
-          // arc midpoint lifted off the surface, scale with chord length
-          const mx = (v1.x + v2.x) / 2
-          const my = (v1.y + v2.y) / 2
-          const mz = (v1.z + v2.z) / 2
-          const ml = Math.sqrt(mx * mx + my * my + mz * mz) || 1
-          const dx = v2.x - v1.x
-          const dy = v2.y - v1.y
-          const dz = v2.z - v1.z
-          const chord = Math.sqrt(dx * dx + dy * dy + dz * dz)
-          const lift = 1 + Math.min(chord * 0.4, 0.55)
-          const cm: Vec3 = {
-            x: (mx / ml) * lift,
-            y: (my / ml) * lift,
-            z: (mz / ml) * lift,
-          }
-
-          const segments = 36
-          let d = ""
-          let drawing = false
-          for (let i = 0; i <= segments; i++) {
-            const t = i / segments
-            const u = 1 - t
-            const bx = u * u * v1.x + 2 * u * t * cm.x + t * t * v2.x
-            const by = u * u * v1.y + 2 * u * t * cm.y + t * t * v2.y
-            const bz = u * u * v1.z + 2 * u * t * cm.z + t * t * v2.z
-
-            const rot = rotateVec3({ x: bx, y: by, z: bz }, phi, theta)
-            const sx = w / 2 + rot.x * radius
-            const sy = h / 2 - rot.y * radius
-            const visible = rot.z > -0.05
-
-            if (visible) {
-              d += `${drawing ? "L" : "M"}${sx.toFixed(2)} ${sy.toFixed(2)} `
-              drawing = true
-            } else {
-              drawing = false
-            }
-          }
-          path.setAttribute("d", d.trim())
-        }
-      },
     })
+
+    // Animation loop to update markers and arcs
+    const animate = () => {
+      if (autoRotate && pointerDownAt.current === null) {
+        phiRef.current += rotateSpeed
+      }
+      const phi = phiRef.current + userPhi.current
+
+      const w = widthRef.current
+      const h = heightRef.current
+      const radius = Math.min(w, h) / 2 - 4
+
+      // ── update marker positions in SVG overlay
+      for (const p of pointsRef.current) {
+        const el = markerCircleRefs.current.get(p.id)
+        if (!el) continue
+        const rotated = rotateVec3(latLngToVec3(p.lat, p.lng), phi, theta)
+        const sx = w / 2 + rotated.x * radius
+        const sy = h / 2 - rotated.y * radius
+        const visible = rotated.z > -0.05
+        el.setAttribute("cx", String(sx))
+        el.setAttribute("cy", String(sy))
+        const opacity = visible ? Math.min(1, 0.4 + rotated.z) : 0
+        el.setAttribute("opacity", String(opacity))
+        el.style.pointerEvents = visible ? "auto" : "none"
+      }
+
+      // ── update arc paths in SVG overlay
+      const byId = new Map(pointsRef.current.map((p) => [p.id, p]))
+      for (const arc of arcsRef.current) {
+        const path = arcPathRefs.current.get(`${arc.from}-${arc.to}`)
+        if (!path) continue
+        const a = byId.get(arc.from)
+        const b = byId.get(arc.to)
+        if (!a || !b) {
+          path.setAttribute("d", "")
+          continue
+        }
+        const v1 = latLngToVec3(a.lat, a.lng)
+        const v2 = latLngToVec3(b.lat, b.lng)
+
+        // arc midpoint lifted off the surface, scale with chord length
+        const mx = (v1.x + v2.x) / 2
+        const my = (v1.y + v2.y) / 2
+        const mz = (v1.z + v2.z) / 2
+        const ml = Math.sqrt(mx * mx + my * my + mz * mz) || 1
+        const dx = v2.x - v1.x
+        const dy = v2.y - v1.y
+        const dz = v2.z - v1.z
+        const chord = Math.sqrt(dx * dx + dy * dy + dz * dz)
+        const lift = 1 + Math.min(chord * 0.4, 0.55)
+        const cm: Vec3 = {
+          x: (mx / ml) * lift,
+          y: (my / ml) * lift,
+          z: (mz / ml) * lift,
+        }
+
+        const segments = 36
+        let d = ""
+        let drawing = false
+        for (let i = 0; i <= segments; i++) {
+          const t = i / segments
+          const u = 1 - t
+          const bx = u * u * v1.x + 2 * u * t * cm.x + t * t * v2.x
+          const by = u * u * v1.y + 2 * u * t * cm.y + t * t * v2.y
+          const bz = u * u * v1.z + 2 * u * t * cm.z + t * t * v2.z
+
+          const rot = rotateVec3({ x: bx, y: by, z: bz }, phi, theta)
+          const sx = w / 2 + rot.x * radius
+          const sy = h / 2 - rot.y * radius
+          const visible = rot.z > -0.05
+
+          if (visible) {
+            d += `${drawing ? "L" : "M"}${sx.toFixed(2)} ${sy.toFixed(2)} `
+            drawing = true
+          } else {
+            drawing = false
+          }
+        }
+        path.setAttribute("d", d.trim())
+      }
+
+      requestAnimationFrame(animate)
+    }
+    animationFrameRef.current = requestAnimationFrame(animate) as unknown as number
 
     // fade in after first frame
     requestAnimationFrame(() => {
@@ -272,6 +279,9 @@ export function Globe(props: GlobeProps) {
     })
 
     return () => {
+      if (animationFrameRef.current !== null) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
       globe.destroy()
       ro.disconnect()
     }
